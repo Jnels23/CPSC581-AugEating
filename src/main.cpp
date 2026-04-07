@@ -2,6 +2,8 @@
 #include <Arduino.h>
 #include <Adafruit_NeoPixel.h>
 #include <HotButton.h>
+#include <LiquidCrystal_I2C.h>
+#include <I2CScanner.h>
 
 //Pins Used
 const int lowLight = 3;         //LED pin constant
@@ -10,11 +12,11 @@ const int buttonLowerPIN = 5;   //Reduce temp pin
 const int buttonHigherPIN = 6;  //increase temp pin
 
 //Constants - Pressure reader
-const int fsrPin = A4;     // the FSR and 10K pulldown are connected to a0
+const int fsrPin = A2;     // the FSR and 10K pulldown are connected to a0
 const int potTARE = 10;      //pot tare
 
 //Constants - pot LEDs and Temp
-const int numLEDS = 3;      //Num of RGB LEDs
+const int numLEDS = 5;      //Num of RGB LEDs
 
 // Declare our NeoPixel strip object:
 Adafruit_NeoPixel strip(numLEDS, rgbPIN, NEO_GRB + NEO_KHZ800);
@@ -26,15 +28,22 @@ int buttonHigherState = 0;
 int lastButtonHigherState = 0;
 int lastButtonLowerState = 0;
 int currentTemp = 0;
+int lightsOn = 0;
  
+//LCD screen
+LiquidCrystal_I2C tempLCD(0x23, 16, 2);
+LiquidCrystal_I2C weightLCD(0x27, 16, 2);
 
 //Testing stuff
 const bool THIS = true;    //Just to test things
+I2CScanner scanner;
 
 //Delarations
 
 void colorWipe(uint32_t color, int wait);
 void changeColor(uint32_t color, int wait);
+bool i2cAddrTest(uint8_t addr);
+String printSize(int pressure);
 
   //Board will run this automatically once when it is plugged in. If we were connecting to wifi for example, it would go here
 void setup() {
@@ -44,30 +53,63 @@ void setup() {
   pinMode(lowLight, OUTPUT);
   pinMode(buttonLowerPIN, INPUT_PULLUP);
   pinMode(buttonHigherPIN, INPUT_PULLUP);
+
   strip.begin();           // INITIALIZE NeoPixel strip object (REQUIRED)
   strip.show();            // Turn OFF all pixels ASAP
   strip.setBrightness(20); // Set BRIGHTNESS to about 1/5 (max = 255)
+
+  // if (!i2cAddrTest(0x27)) {
+  //   tempLCD = LiquidCrystal_I2C(0x3F, 16, 2);
+  //   weightLCD = LiquidCrystal_I2C(0x3F, 16, 2);
+  // }
+  tempLCD.init();
+  tempLCD.noBacklight();
+  weightLCD.init();
+  weightLCD.noBacklight();
+
+  scanner.Init();
 }
  
 void loop(void) {
 
+  
   pressureReading = analogRead(fsrPin);  
 
   buttonLowerState = digitalRead(buttonLowerPIN);
   buttonHigherState = digitalRead(buttonHigherPIN);
 
-  uint32_t lowTemp = strip.Color(114,190,65); // LOW temp colour, green
-  uint32_t medTemp = strip.Color(235,172,30); // MEDIUM temp colour, yellow/orange
-  uint32_t highTemp = strip.Color(117,40,9); // HIGH temp colour, red
+  uint32_t lowTemp = strip.Color(125,209,15); // LOW temp colour, green
+  uint32_t medTemp = strip.Color(209,129,17); // MEDIUM temp colour, yellow/orange
+  uint32_t highTemp = strip.Color(117,4,4); // HIGH temp colour, red
 
   if (pressureReading > potTARE){ //If there is something on the sensor,
+    
+    tempLCD.backlight();
+    weightLCD.backlight();
 
-    if (pressureReading < 800) { //low
-      Serial.println("EMPTY");
+    if (pressureReading < 980) { //low
+
+
+      Serial.print("EMPTY. Pressure:");
+      Serial.println(pressureReading);
+      lightsOn = 1;
+
+      weightLCD.setCursor (0, 0);
+      weightLCD.print("     REFILL      ");
       analogWrite(lowLight,HIGH);
 
     } else { //all good
-      Serial.println(" Not Empty");
+      
+      Serial.print("not empty. Pressure:");
+      Serial.println(pressureReading);
+      if (pressureReading < 1000){
+        lightsOn = 3;
+      } else {
+        lightsOn = 5;
+      }
+
+      weightLCD.setCursor(0,0);
+      weightLCD.print(printSize(pressureReading));
       digitalWrite(lowLight, LOW);
     }
 
@@ -84,17 +126,24 @@ void loop(void) {
 
       switch (currentTemp) {
         case 1: //Temp is low
-          changeColor(lowTemp,100);
+          tempLCD.setCursor(0, 0);
+          tempLCD.print("      LOW       ");
+          changeColor(lowTemp,lightsOn);
           break;
         case 2: //Temp is med
-          changeColor(medTemp,100);
+          tempLCD.setCursor(0, 0);
+          tempLCD.print("     MEDIUM     ");
+          changeColor(medTemp,lightsOn);
           break;
         case 3: //Temp is high
-          changeColor(highTemp,100);
+          tempLCD.setCursor(0, 0);
+          tempLCD.print("      HIGH      ");
+          changeColor(highTemp,lightsOn);
           break;
         default: //Turn lights off
-          strip.clear();
-          strip.show();
+          tempLCD.setCursor(0, 0);
+          tempLCD.print("      OFF       ");
+          changeColor(strip.Color(255,255,255), lightsOn);
           break;
 
       lastButtonHigherState = buttonHigherState;
@@ -109,6 +158,13 @@ void loop(void) {
     lastButtonHigherState = 0;
     lastButtonLowerState = 0;
     currentTemp = 0;
+
+    tempLCD.clear();
+    weightLCD.clear();
+
+    tempLCD.noBacklight();
+    weightLCD.noBacklight();
+
     //SCREEN TURNS OFF
     strip.clear();
     strip.show();
@@ -117,18 +173,24 @@ void loop(void) {
   delay(500);
 } 
 
-void colorWipe(uint32_t color, int wait) {
-  for(int i=0; i<strip.numPixels(); i++) { // For each pixel in strip...
-    strip.setPixelColor(i, color);         //  Set pixel's color (in RAM)
-    strip.show();                          //  Update strip to match
-    delay(wait);                           //  Pause for a moment
-  }
-}
-
-void changeColor(uint32_t color, int wait){
-    for(int i=0; i<strip.numPixels(); i++) { // For each pixel in strip...
+void changeColor(uint32_t color, int lightNum){
+  strip.clear();
+  for(int i=0; i<lightNum; i++) {           //For each pixel according to weight
     strip.setPixelColor(i, color);         //  Set pixel's color (in RAM)
   }
   strip.show();                          //  Update strip to match
-  delay(wait);
+  delay(100);
+}
+
+String printSize(int pressure){
+  String giveSize = String(pressureReading);
+  int len = giveSize.length();
+  if (len == 2){
+    giveSize = "      " + giveSize + "  g     ";
+  } else if (len == 3) {
+    giveSize = "      " + giveSize +" g     ";
+  } else if (len == 4) {
+    giveSize = "      " + giveSize +"g     ";
+  }
+  return giveSize;
 }
